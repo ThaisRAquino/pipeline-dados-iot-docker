@@ -1,0 +1,23 @@
+# Exige um Ingress Controller instalado no cluster (ex.: ingress-nginx).
+# Ponto único de entrada externo — só o api-gateway é exposto ao público.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pedidos-veloz-ingress
+  namespace: pedidos-veloz
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pedidos-veloz.local # Substituir pelo domínio real da campanha
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000

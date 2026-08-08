@@ -1,0 +1,58 @@
+# Overlay opcional de observabilidade. Uso:
+#   docker compose -f docker-compose.yml -f docker-compose.observability.yml up --build
+#
+# Sobe: OpenTelemetry Collector (recebe traces/métricas), Jaeger (visualização de
+# tracing distribuído), Prometheus (métricas) e Grafana (dashboards).
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.104.0
+    container_name: pedidos-veloz-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4318:4318" # OTLP HTTP
+      - "4317:4317" # OTLP gRPC
+    networks:
+      - pedidos-veloz-net
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.58
+    container_name: pedidos-veloz-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI do Jaeger
+    networks:
+      - pedidos-veloz-net
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: pedidos-veloz-prometheus
+    volumes:
+      - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - pedidos-veloz-net
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: pedidos-veloz-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3300:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - pedidos-veloz-net
+
+# A rede "pedidos-veloz-net" já é declarada em docker-compose.yml; ao usar os
+# dois arquivos juntos (-f docker-compose.yml -f docker-compose.observability.yml)
+# o Compose reaproveita a mesma definição automaticamente.

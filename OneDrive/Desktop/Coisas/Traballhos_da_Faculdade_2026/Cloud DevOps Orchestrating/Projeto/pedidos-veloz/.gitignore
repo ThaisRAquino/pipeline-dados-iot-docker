@@ -1,0 +1,15 @@
+# Dependências
+node_modules/
+
+# Segredos e configuração local — nunca versionar
+.env
+k8s/02-secrets.yaml
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfvars
+
+# Logs e artefatos locais
+*.log
+.DS_Store

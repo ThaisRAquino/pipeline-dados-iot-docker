@@ -1,0 +1,29 @@
+# Configuração do OpenTelemetry Collector.
+# Recebe traces via OTLP (HTTP/gRPC) dos 4 serviços e exporta para o Jaeger
+# (visualização) e para o log do próprio collector (debug local).
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch: {}
+
+exporters:
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/jaeger, debug]

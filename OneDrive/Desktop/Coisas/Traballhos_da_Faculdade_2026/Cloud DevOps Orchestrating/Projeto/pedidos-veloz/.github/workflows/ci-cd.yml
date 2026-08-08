@@ -1,0 +1,159 @@
+name: CI/CD - Pedidos Veloz
+
+# Gatilhos: PRs rodam apenas build+testes (gate de qualidade); push em main
+# também publica as imagens e (opcionalmente) faz o deploy.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  packages: write # necessário para publicar no GHCR
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository_owner }}/pedidos-veloz
+
+jobs:
+  # ---- 1. Lint + testes unitários, em paralelo para os 4 serviços ----
+  lint-test:
+    name: Lint & Test (${{ matrix.service }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, pedidos-service, pagamentos-service, estoque-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+
+      - name: Instalar dependências
+        working-directory: services/${{ matrix.service }}
+        run: npm install
+
+      - name: Lint (sintaxe básica)
+        working-directory: services/${{ matrix.service }}
+        run: node --check src/index.js
+
+      - name: Testes unitários
+        working-directory: services/${{ matrix.service }}
+        run: npm test
+
+  # ---- 2. Build + scan de segurança da imagem (não publica em PR) ----
+  build:
+    name: Build & Scan (${{ matrix.service }})
+    needs: lint-test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, pedidos-service, pagamentos-service, estoque-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build da imagem (sem publicar)
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          push: false
+          tags: pedidos-veloz-${{ matrix.service }}:ci
+          load: true
+
+      - name: Scan de vulnerabilidades (Trivy) — não bloqueante no MVP
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true
+        with:
+          image-ref: pedidos-veloz-${{ matrix.service }}:ci
+          format: table
+          severity: CRITICAL,HIGH
+          exit-code: "0"
+
+  # ---- 3. Publicação das imagens no GHCR (apenas em push para main) ----
+  publish:
+    name: Publish (${{ matrix.service }})
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service: [api-gateway, pedidos-service, pagamentos-service, estoque-service]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          # GITHUB_TOKEN é injetado automaticamente pelo GitHub Actions — nenhum
+          # segredo manual precisa ser cadastrado para publicar no GHCR.
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & Push com tags versionadas
+        uses: docker/build-push-action@v6
+        with:
+          context: services/${{ matrix.service }}
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE }}-${{ matrix.service }}:latest
+
+  # ---- 4. Deploy (rolling update) — requer aprovação manual do ambiente "production" ----
+  deploy:
+    name: Deploy em produção
+    needs: publish
+    # Só tenta o deploy se existir um cluster de produção configurado (secret
+    # KUBE_CONFIG_DATA cadastrado em Settings > Secrets and variables >
+    # Actions). Sem isso, o job aparece como "skipped" (cinza) em vez de
+    # falhar (vermelho) — é o comportamento esperado para quem ainda não tem
+    # um cluster real, como no MVP/vídeo de demonstração deste projeto.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.HAS_PRODUCTION_CLUSTER == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production # configurar "required reviewers" nas Settings > Environments do repo
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar kubeconfig
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > "$HOME/.kube/config"
+
+      - name: Atualizar tags das imagens nos manifests
+        run: |
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/04-api-gateway.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/05-pedidos-service.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/06-pagamentos-service.yaml
+          sed -i "s|:latest|:${{ github.sha }}|g" k8s/07-estoque-service.yaml
+
+      - name: Aplicar manifests (rolling update)
+        run: |
+          kubectl apply -f k8s/00-namespace.yaml
+          kubectl apply -f k8s/01-configmap.yaml
+          kubectl apply -f k8s/03-postgres.yaml
+          kubectl apply -f k8s/04-api-gateway.yaml
+          kubectl apply -f k8s/05-pedidos-service.yaml
+          kubectl apply -f k8s/06-pagamentos-service.yaml
+          kubectl apply -f k8s/07-estoque-service.yaml
+          kubectl apply -f k8s/08-networkpolicy.yaml
+          kubectl apply -f k8s/10-otel-collector.yaml
+
+      - name: Aguardar rollout e validar saúde (gate de rollback automático)
+        run: |
+          kubectl rollout status deployment/api-gateway -n pedidos-veloz --timeout=180s
+          kubectl rollout status deployment/pedidos-service -n pedidos-veloz --timeout=180s
+          kubectl rollout status deployment/pagamentos-service -n pedidos-veloz --timeout=180s
+          kubectl rollout status deployment/estoque-service -n pedidos-veloz --timeout=180s
+
+      - name: Rollback automático em caso de falha
+        if: failure()
+        run: |
+          kubectl rollout undo deployment/api-gateway -n pedidos-veloz
+          kubectl rollout undo deployment/pedidos-service -n pedidos-veloz
+          kubectl rollout undo deployment/pagamentos-service -n pedidos-veloz
+          kubectl rollout undo deployment/estoque-service -n pedidos-veloz

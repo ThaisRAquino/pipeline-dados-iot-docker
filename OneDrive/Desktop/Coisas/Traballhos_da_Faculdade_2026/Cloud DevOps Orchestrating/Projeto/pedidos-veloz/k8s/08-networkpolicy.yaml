@@ -1,0 +1,167 @@
+# Políticas de segurança de rede: negam tudo por padrão e liberam apenas o
+# tráfego estritamente necessário entre serviços (princípio do menor privilégio).
+# Requer um CNI que suporte NetworkPolicy (Calico, Cilium, etc.).
+
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: pedidos-veloz
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress", "Egress"]
+---
+# API Gateway: aceita entrada de fora do namespace (do Ingress Controller) e
+# pode chamar os três serviços internos + resolver DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-api-gateway
+  namespace: pedidos-veloz
+spec:
+  podSelector:
+    matchLabels:
+      app: api-gateway
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - {} # Em produção, restringir ao namespace do Ingress Controller
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pedidos-service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pagamentos-service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: estoque-service
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Serviço de Pedidos: recebe apenas do Gateway; fala com Estoque, Pagamentos e Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pedidos-service
+  namespace: pedidos-veloz
+spec:
+  podSelector:
+    matchLabels:
+      app: pedidos-service
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: estoque-service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: pagamentos-service
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Serviço de Estoque: recebe do Gateway e do Serviço de Pedidos; fala com Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-estoque-service
+  namespace: pedidos-veloz
+spec:
+  podSelector:
+    matchLabels:
+      app: estoque-service
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+    - from:
+        - podSelector:
+            matchLabels:
+              app: pedidos-service
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Serviço de Pagamentos: recebe do Gateway e do Serviço de Pedidos; sem acesso ao Postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-pagamentos-service
+  namespace: pedidos-veloz
+spec:
+  podSelector:
+    matchLabels:
+      app: pagamentos-service
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: api-gateway
+    - from:
+        - podSelector:
+            matchLabels:
+              app: pedidos-service
+  egress:
+    - to: [] # Necessário para chamar o gateway de pagamento externo (fora do cluster)
+      ports:
+        - port: 443
+          protocol: TCP
+    - to: []
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+---
+# Postgres: recebe apenas de Pedidos e Estoque.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres
+  namespace: pedidos-veloz
+spec:
+  podSelector:
+    matchLabels:
+      app: postgres
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: pedidos-service
+    - from:
+        - podSelector:
+            matchLabels:
+              app: estoque-service
