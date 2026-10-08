@@ -68,7 +68,7 @@ git config --global user.email "seu.email@exemplo.com"
 ### 3. Clonar o repositório e preparar o ambiente
 
 ```bash
-git clone <URL_DO_SEU_REPOSITORIO>
+git clone https://github.com/ThaisRAquino/pipeline-dados-iot-docker.git
 cd <pasta-criada-pelo-clone>
 
 python -m venv venv
@@ -213,7 +213,7 @@ streamlit run src/dashboard.py --server.address=127.0.0.1
 git init
 git add .
 git commit -m "Projeto inicial: Pipeline de Dados IoT"
-git remote add origin <URL_DO_SEU_REPOSITORIO>
+git remote add origin https://github.com/ThaisRAquino/pipeline-dados-iot-docker.git
 git push -u origin main
 git pull
 ```
